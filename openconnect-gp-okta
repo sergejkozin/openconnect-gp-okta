@@ -3,8 +3,10 @@
 import base64
 import click
 import contextlib
+import functools
 import getpass
 import json
+import keyring
 import lxml.etree
 import os
 import re
@@ -18,6 +20,40 @@ try:
     import pyotp
 except ImportError:
     pyotp = None
+
+
+class KeyringPassword:
+    SERVICE_ID = 'openconnect-gp-okta'
+
+    def __init__(self, gateway, username):
+        username_key = '@'.join([username, gateway])
+        args = (self.SERVICE_ID, username_key)
+
+        self.get = functools.partial(keyring.get_password, *args)
+        self.set = functools.partial(keyring.set_password, *args)
+        self.delete = functools.partial(keyring.delete_password, *args)
+
+    @property
+    def value(self):
+        try:
+            return self.get()
+        except keyring.errors.KeyringLocked:
+            return None
+
+    @value.setter
+    def value(self, password):
+        try:
+            self.set(password)
+        except keyring.errors.KeyringLocked:
+            pass
+
+    @value.deleter
+    def value(self):
+        try:
+            self.delete()
+        except:
+            pass
+
 
 def check(r):
     r.raise_for_status()
@@ -132,22 +168,49 @@ def popen_forward_sigterm(args, *, stdin=None):
 @click.argument('openconnect-args', nargs=-1)
 @click.option('--username')
 @click.option('--password')
+@click.option('--use-keyring', is_flag=True, default=False)
 @click.option('--totp-key')
 @click.option('--sudo/--no-sudo', default=False)
-def main(gateway, openconnect_args, username, password, totp_key, sudo):
+def main(gateway,
+         openconnect_args,
+         username, password,
+         use_keyring,
+         totp_key,
+         sudo):
+
     if (totp_key is not None) and (pyotp is None):
         print('--totp-key requires pyotp!', file=sys.stderr)
         sys.exit(1)
 
     if username is None:
         username = input('Username: ')
+
+    keyring_password = KeyringPassword(gateway, username)
+    update_keyring = False
+
+    if use_keyring:
+        password = password or keyring_password.value
+
     if password is None:
         password = getpass.getpass()
 
+        if use_keyring:
+            update_keyring = True
+
     with requests.Session() as s:
         saml_req_url = prelogin(s, gateway)
-        saml_resp_url, saml_resp_data = okta_saml(s, saml_req_url, username, password, totp_key)
+
+        try:
+            saml_resp_url, saml_resp_data = okta_saml(s, saml_req_url, username, password, totp_key)
+        except requests.exceptions.HTTPError as err:
+            if use_keyring and err.response.status_code == 401:
+                del keyring_password.value
+            raise
+
         saml_username, prelogin_cookie = complete_saml(s, saml_resp_url, saml_resp_data)
+
+    if update_keyring:
+        keyring_password.value = password
 
     subprocess_args = [
         'openconnect',
