@@ -166,7 +166,12 @@ def popen_forward_sigterm(args, *, stdin=None):
                     yield p
                     if p.stdin:
                         p.stdin.close()
-                    os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)
+
+                    try:
+                        os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)
+                    except AttributeError:
+                        os.waitpid(p.pid, os.WNOHANG)
+
 
 @click.command()
 @click.argument('gateway')
