@@ -14,6 +14,7 @@ import requests
 import signal
 import subprocess
 import sys
+import time
 import urllib
 
 try:
@@ -87,12 +88,16 @@ def okta_auth(s, domain, username, password, totp_key):
                 'push': 1}.get(factor['factorType'], 2)
         for factor in sorted(r['_embedded']['factors'], key=priority):
             if factor['factorType'] == 'push':
+                print('MFA push sent, waiting for approval ', end='', flush=True)
                 url = factor['_links']['verify']['href']
                 while True:
                     r = post_json(s, url, {'stateToken': r['stateToken']})
                     if r['status'] != 'MFA_CHALLENGE':
+                        print(' Approved', flush=True)
                         break
                     assert r['factorResult'] == 'WAITING'
+                    print('.', end='', flush=True)
+                    time.sleep(0.5)
                 break
             if factor['factorType'] == 'sms':
                 url = factor['_links']['verify']['href']
@@ -183,7 +188,7 @@ def main(gateway,
         sys.exit(1)
 
     if username is None:
-        username = input('Username: ')
+        username = input('Okta Username: ')
 
     keyring_password = KeyringPassword(gateway, username)
     update_keyring = False
@@ -192,7 +197,7 @@ def main(gateway,
         password = password or keyring_password.value
 
     if password is None:
-        password = getpass.getpass()
+        password = getpass.getpass('Okta Password: ')
 
         if use_keyring:
             update_keyring = True
